@@ -359,6 +359,7 @@ class ProposalLayer(KE.Layer):
             indices = tf.image.non_max_suppression(
                 boxes, scores, self.proposal_count,
                 self.nms_threshold, name="rpn_non_max_suppression")
+            indices = tf.Print(indices, [indices], message='indices post-NMS:')
             proposals = tf.gather(boxes, indices)
             score_proposals = tf.expand_dims(tf.gather(scores, indices), 1)
             # Pad if needed
@@ -963,7 +964,7 @@ def fpn_target_graph(rois, feature_maps, target_feature_maps, image_meta,
 
     x_target = KL.Reshape((-1, pool_size * pool_size * 256))(x_target)
 
-    return KL.Subtract(name="comparison_layer")([x_input, x_target])
+    return KL.Subtract(name="comparison_layer")([x_input, x_target]), x_input, x_target, input_target_bb
 
 
 def fpn_classifier_graph(rois, feature_maps, image_meta,
@@ -1274,6 +1275,7 @@ def load_target(target_dataset, config, target_id):
         mode=config.IMAGE_RESIZE_MODE)
 
     window = window / config.IMAGE_MAX_DIM # normalize coordinates
+    print('bb/WINDOW', window)
 
     image_meta = compose_image_meta(target_id, original_shape, image.shape,
                                     window, scale, [])
@@ -2259,6 +2261,7 @@ class MaskRCNN():
                   [rpn_rois, mrcnn_class, mrcnn_bbox, input_image_meta])
 
               # Create masks for detections
+              # THESE ARE POST-NMS!
               detection_boxes = KL.Lambda(lambda x: x[..., :4])(detections)
               mrcnn_mask = build_fpn_mask_graph(detection_boxes, mrcnn_feature_maps,
                                                 input_image_meta,
@@ -2267,14 +2270,14 @@ class MaskRCNN():
                                                 train_bn=config.TRAIN_BN)
 
               # Target branch
-              siamese_output = fpn_target_graph(rpn_rois, mrcnn_feature_maps,
+              siamese_output, features, target_feature, output_target_bb = fpn_target_graph(detection_boxes, mrcnn_feature_maps,
                                                 target_image_feature_maps, input_image_meta,
                                                 input_target_meta, input_target_bb,
                                                 config.POOL_SIZE)
 
               model = KM.Model([input_target, input_target_meta, input_target_bb, input_image, input_image_meta, input_anchors],
                                [detections, mrcnn_class, mrcnn_bbox,
-                                   mrcnn_mask, rpn_rois, rpn_class, rpn_bbox, siamese_output],
+                                   mrcnn_mask, rpn_rois, rpn_class, rpn_bbox, siamese_output, features, target_feature, output_target_bb] + target_image_feature_maps,
                                name='mask_rcnn')
 
         #  Add multi-GPU support.
@@ -2698,8 +2701,6 @@ class MaskRCNN():
         class_ids = detections[:N, 4].astype(np.int32)
         scores = detections[:N, 5]
         masks = mrcnn_mask[np.arange(N), :, :, class_ids]
-        print('detections', detections)
-        print('class_ids', class_ids)
 
         # Translate normalized coordinates in the resized image to pixel
         # coordinates in the original image before resizing
@@ -2736,7 +2737,7 @@ class MaskRCNN():
 
         return boxes, class_ids, scores, full_masks
 
-    def detect(self, images, targets, verbose=0):
+    def detect(self, images, targets, target_bbs, verbose=0):
         """Runs the detection pipeline.
 
         images: List of images, potentially of different sizes.
@@ -2766,9 +2767,8 @@ class MaskRCNN():
 
         # Mold target inputs to proper format
         molded_targets, target_metas, target_windows = self.mold_inputs(targets)
-        target_bbs = target_windows / self.config.IMAGE_MAX_DIM
-
-
+        target_bbs = np.array(target_bbs)
+        print('target_bbs', target_bbs)
 
         # Validate image sizes
         # All images in a batch MUST be of the same size
@@ -2783,21 +2783,29 @@ class MaskRCNN():
         # TODO: can this be optimized to avoid duplicating the anchors?
         anchors = np.broadcast_to(anchors, (self.config.BATCH_SIZE,) + anchors.shape)
 
-        print([i.shape for i in [molded_targets, target_metas, target_windows, molded_images, image_metas, anchors]])
-
         if verbose:
             log("molded_images", molded_images)
             log("image_metas", image_metas)
             log("anchors", anchors)
         # Run object detection
-        detections, _, _, mrcnn_mask, _, _, _, siamese_output =\
-            self.keras_model.predict([molded_targets, target_metas, target_windows, molded_images, image_metas, anchors], verbose=1)
+        print('Beginning prediction')
+        detections, _, _, mrcnn_mask, _, _, _, siamese_output, features, target_feature, input_target_bb, t1, t2, t3, t4 =\
+            self.keras_model.predict([molded_targets, target_metas, target_bbs, molded_images, image_metas, anchors], verbose=1)
+        print('input_target_bb from fpn_target_graph', input_target_bb)
+        print('completing predictions')
+        [ print(i.shape) for i in [detections, mrcnn_mask, siamese_output, features, target_feature]  ]
+        target_image_feature_maps = [t1, t2, t3, t4]
         # Process detections
         results = []
+        print('beginning processing results')
+        print('len(images)', len(images))
         for i, image in enumerate(images):
-            print(detections[i], mrcnn_mask[i],
-                                       image.shape, molded_images[i].shape,
-                                       windows[i])
+            print(i, image.shape)
+            # detections and mrcnn_mask are of size 100, post-NMS. Bunch of them are 0s tho.
+            print('detections[i].shape, mrcnn_mask[i].shape', detections[i].shape, mrcnn_mask[i].shape)
+            # print(detections[i], mrcnn_mask[image],
+            #                            image.shape, molded_images[i].shape,
+            #                            windows[i])
             final_rois, final_class_ids, final_scores, final_masks =\
                 self.unmold_detections(detections[i], mrcnn_mask[i],
                                        image.shape, molded_images[i].shape,
@@ -2808,7 +2816,8 @@ class MaskRCNN():
                 "scores": final_scores,
                 "masks": final_masks,
             })
-        return results, siamese_output
+        print('results processed')
+        return results, siamese_output, features, target_feature, target_image_feature_maps
 
     def detect_molded(self, molded_images, image_metas, verbose=0):
         """Runs the detection pipeline, but expect inputs that are
