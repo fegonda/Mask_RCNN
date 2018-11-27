@@ -234,19 +234,6 @@ def box_refinement(box, gt_box):
 #  Dataset
 ############################################################
 
-class TargetDataset(object):
-    """Base class for target dataset classes- slightly different than a normal
-    Dataset. Override everything here!
-
-    Target ids MUST correspond to class ids in the actual Dataset."""
-
-    def load_target(self, target_id):
-        return np.empty([0, 0, 0])
-
-    def load_bb(self, target_id):
-        return np.array([0, 0, 0, 0])
-
-
 class Dataset(object):
     """The base class for dataset classes.
     To use it, create a new class that adds functions specific to the dataset
