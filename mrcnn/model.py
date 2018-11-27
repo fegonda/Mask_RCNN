@@ -971,8 +971,6 @@ def fpn_target_graph(rois, feature_maps, target_feature_maps, image_meta,
     # ROI pooling target
     input_target_bb = KL.Reshape((1, 4))(input_target_bb)
 
-    # input_target_bb = tf.Print(input_target_bb, [input_target_bb])
-
     x_target = PyramidROIAlign([pool_size, pool_size],
                                name="roi_align_siamese_target")([input_target_bb, image_target_meta] + target_feature_maps)
 
@@ -984,7 +982,7 @@ def fpn_target_graph(rois, feature_maps, target_feature_maps, image_meta,
     # [batch, num_rois, feature_size]
     # TimeDistributed operates over index 1 (num_rois)
 
-    dense = KL.Dense(1, name='siamese_fc_internal', kernel_initializer='TruncatedNormal')
+    dense = KL.Dense(2, name='siamese_fc_internal', kernel_initializer='TruncatedNormal')
     target_logit = KL.TimeDistributed(dense, name='siamese_fc')(x_diff)
 
     target_prob = KL.TimeDistributed(KL.Activation('softmax'), name='target_prob')(target_logit)
@@ -1180,14 +1178,15 @@ def target_branch_loss_graph(gt_targets, pred_logits, siamese_output, features, 
     pred_logits: [batch, num_rois, 1]. Predicted logits.
     """
     gt_targets = tf.cast(gt_targets, 'int64')
-    gt_targets = tf.Print(gt_targets, [gt_targets, pred_logits, siamese_output, features, target_feature])
-    gt_targets_shape = K.shape(gt_targets)
-    pred_logits_shape = K.shape(pred_logits)
-    siamese_output_shape = K.shape(siamese_output)
-    features_shape = K.shape(features)
-    target_feature_shape = K.shape(target_feature)
+    # gt_targets_max = K.max(gt_targets)
+    # gt_targets = tf.Print(gt_targets, [gt_targets_max, gt_targets, pred_logits, siamese_output, features, target_feature])
+    # gt_targets_shape = K.shape(gt_targets)
+    # pred_logits_shape = K.shape(pred_logits)
+    # siamese_output_shape = K.shape(siamese_output)
+    # features_shape = K.shape(features)
+    # target_feature_shape = K.shape(target_feature)
 
-    gt_targets = tf.Print(gt_targets, [gt_targets_shape, pred_logits_shape, siamese_output_shape, features_shape, target_feature_shape])
+    # gt_targets = tf.Print(gt_targets, [gt_targets_shape, pred_logits_shape, siamese_output_shape, features_shape, target_feature_shape])
 
     loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
         labels=gt_targets, logits=pred_logits
@@ -2656,9 +2655,9 @@ class MaskRCNN():
                                         histogram_freq=0, write_graph=True, write_images=False),
             keras.callbacks.ModelCheckpoint(self.checkpoint_path,
                                             verbose=0, save_weights_only=True),
-            keras.callbacks.LambdaCallback(
-                on_batch_begin=siamese_fc_weights_callback,
-            on_batch_end=siamese_fc_weights_callback)
+            # keras.callbacks.LambdaCallback(
+            #     on_batch_begin=siamese_fc_weights_callback,
+            # on_batch_end=siamese_fc_weights_callback)
         ]
 
         # Add custom callbacks to the list
